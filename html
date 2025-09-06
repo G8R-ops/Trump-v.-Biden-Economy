@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trump vs. Biden</title>
+<style>
+  :root{
+    --bg:#f7f8fb; --text:#111827; --muted:#6b7280; --panel:#ffffff; --border:#e5e7eb;
+    --stage:#f3f4f6; --bar:#9ca3af; --accent:#111827;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}
+  header{padding:16px 20px;background:#fff;border-bottom:1px solid var(--border)}
+  header h1{margin:0;font-size:20px}
+  header p{margin:6px 0 0;color:var(--muted);font-size:13px}
+  main{display:flex;gap:16px;padding:16px;max-width:1100px;margin:0 auto}
+  .panel{width:260px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px}
+  .row{margin:10px 0}
+  .btn{padding:10px 12px;background:#111827;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:600}
+  .btn.ghost{background:#fff;color:#111827;border:1px solid var(--border)}
+  .btn:hover{filter:brightness(1.05)}
+  .stage{flex:1;position:relative;background:var(--stage);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  canvas{width:100%;height:420px;display:block;background:var(--stage)}
+  .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#111827;pointer-events:none}
+  .overlay.hidden{display:none}
+  .pick{display:flex;gap:10px;align-items:center}
+  .card{flex:1;background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px;cursor:pointer;display:flex;gap:8px;align-items:center}
+  .card.selected{outline:2px solid #111827}
+  .card img{width:36px;height:36px;border-radius:999px;object-fit:cover}
+  .card span{font-weight:700}
+</style>
+</head>
+<body>
+<header>
+  <h1>Trump vs. Biden Economy</h1>
+  <p>Pick your candidate. Hold mouse (or Space) to rise, release to fall.</p>
+</header>
+<main>
+  <div class="panel">
+    <div class="row"><strong>Pick your candidate and navigate the economy. </strong></div>
+    <div class="row pick">
+      <div class="card" id="pickTrump"><img id="pickTrumpImg" alt="Trump"/><span>Trump</span></div>
+      <div class="card" id="pickBiden"><img id="pickBidenImg" alt="Biden"/><span>Biden</span></div>
+    </div>
+    <div class="row" style="display:flex;gap:8px">
+      <button class="btn" id="startBtn">Start</button>
+      <button class="btn ghost" id="resetBtn">Reset</button>
+    </div>
+    <div class="row">Distance: <span id="distTxt">0</span> m</div>
+  </div>
+  <div class="stage">
+    <canvas id="canvas" width="720" height="420"></canvas>
+    <div class="overlay hidden" id="overlay"><div id="overlayText">Game Over</div></div>
+  </div>
+</main>
+<script>
+(function(){
+  'use strict';
+
+  function makeImage(url){
+    const img=new Image();
+    img.crossOrigin='anonymous';
+    img.__ready=false; img.__broken=false;
+    img.addEventListener('load',()=>{ img.__ready=true; });
+    img.addEventListener('error',()=>{ img.__broken=true; });
+    img.src=url;
+    return img;
+  }
+  function isDrawable(img){
+    return !!(img && img.__ready && !img.__broken && img.complete && img.naturalWidth>0);
+  }
+
+  // Assets (faces & backgrounds)
+  const trumpImg=makeImage('https://upload.wikimedia.org/wikipedia/commons/5/56/Donald_Trump_official_portrait.jpg');
+  const bidenImg=makeImage('https://upload.wikimedia.org/wikipedia/commons/6/68/Joe_Biden_presidential_portrait.jpg');
+  const flagImg=makeImage('https://upload.wikimedia.org/wikipedia/commons/a/a4/Flag_of_the_United_States.svg');
+  const dumpsterImg=makeImage('https://upload.wikimedia.org/wikipedia/commons/0/0f/Blue_dumpster.jpg');
+
+  // DOM
+  const canvas=document.getElementById('canvas');
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width,H=canvas.height;
+  const startBtn=document.getElementById('startBtn');
+  const resetBtn=document.getElementById('resetBtn');
+  const overlay=document.getElementById('overlay');
+  const overlayText=document.getElementById('overlayText');
+  const distTxt=document.getElementById('distTxt');
+  const pickTrump=document.getElementById('pickTrump');
+  const pickBiden=document.getElementById('pickBiden');
+  const pickTrumpImg=document.getElementById('pickTrumpImg');
+  const pickBidenImg=document.getElementById('pickBidenImg');
+
+  pickTrumpImg.src=trumpImg.src;
+  pickBidenImg.src=bidenImg.src;
+
+  const presets={
+    trump:{img:trumpImg,gravity:520,thrust:900,speed:130,spawnEverySec:1.3,gap:160},
+    biden:{img:bidenImg,gravity:520,thrust:900,speed:130,spawnEverySec:1.3,gap:160}
+  };
+
+  let currentMode='trump';
+  let state=null, raf=null, lastTs=0, holding=false, running=false;
+
+  function updatePickUI(){
+    pickTrump.classList.toggle('selected', currentMode==='trump');
+    pickBiden.classList.toggle('selected', currentMode==='biden');
+  }
+
+  function init(){
+    const m=presets[currentMode];
+    state={ x:100,y:H/2,vy:0,img:m.img,gravity:m.gravity,thrust:m.thrust,
+            speed:m.speed,spawnEverySec:m.spawnEverySec,gap:m.gap,
+            time:0,lastSpawn:0,obstacles:[],dist:0,crashed:false };
+    distTxt.textContent='0';
+    overlay.classList.add('hidden'); holding=false; running=false; lastTs=0;
+    if(currentMode==='biden'){
+      state.obstacles.push({x: W - 120, yTop: 0, yBot: 0, w: 70, label:'INFLATION', full:true});
+    } else {
+      const gapY = 60 + Math.random()*(H - 120 - state.gap);
+      state.obstacles.push({x: W - 220, yTop: gapY, yBot: gapY + state.gap, w: 50});
+    }
+    draw();
+  }
+
+  function spawn(){
+    const gapY = 60 + Math.random()*(H - 120 - state.gap);
+    state.obstacles.push({ x: W, yTop: gapY, yBot: gapY + state.gap, w: 50 });
+  }
+
+  function step(dt){
+    if(state.crashed) return;
+    state.time+=dt; state.dist+=state.speed*dt;
+    if(state.time - state.lastSpawn > state.spawnEverySec){ spawn(); state.lastSpawn = state.time; }
+    if(holding) state.vy-=state.thrust*dt;
+    state.vy+=state.gravity*dt; state.y+=state.vy*dt;
+    if(state.y<20){state.y=20; state.vy=0;} if(state.y>H-20){state.y=H-20; state.vy=0;}
+    const spd=state.speed*dt;
+    for(const o of state.obstacles){ o.x -= spd; }
+    state.obstacles = state.obstacles.filter(o=>o.x+o.w>0);
+    const r=20;
+    for(const o of state.obstacles){
+      const inX=(state.x+r>o.x)&&(state.x-r<o.x+o.w);
+      if(inX && (state.y-r<o.yTop || state.y+r>o.yBot)) { gameOver(); break; }
+    }
+  }
+
+  function drawBackground(){
+    if(currentMode==='trump' && isDrawable(flagImg)){
+      ctx.drawImage(flagImg,0,0,W,H);
+    } else if(currentMode==='biden' && isDrawable(dumpsterImg)){
+      ctx.drawImage(dumpsterImg,0,0,W,H);
+    } else {
+      ctx.fillStyle='#f3f4f6'; ctx.fillRect(0,0,W,H);
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    drawBackground();
+
+    state.obstacles.forEach(o=>{
+      ctx.fillStyle='#9ca3af';
+      if(o.full){ ctx.fillRect(o.x,0,o.w,H); }
+      else{ ctx.fillRect(o.x,0,o.w,o.yTop); ctx.fillRect(o.x,o.yBot,o.w,H-o.yBot); }
+      if(o.label){
+        ctx.save(); ctx.fillStyle='#111827'; ctx.font='700 22px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+        ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.translate(o.x + o.w/2, H/2); ctx.rotate(-Math.PI/2);
+        ctx.fillText(o.label, 0, 0); ctx.restore();
+      }
+    });
+
+    const img = state.img, r=20;
+    if(isDrawable(img)){
+      ctx.save(); ctx.beginPath(); ctx.arc(state.x,state.y,r,0,Math.PI*2); ctx.clip();
+      ctx.drawImage(img, state.x-r, state.y-r, 2*r, 2*r); ctx.restore();
+      ctx.beginPath(); ctx.arc(state.x,state.y,r,0,Math.PI*2); ctx.lineWidth=3; ctx.strokeStyle=(currentMode==='biden')?'#2563eb':'#ef4444'; ctx.stroke();
+    } else {
+      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(state.x,state.y,r,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  function loop(ts){
+    if(!running) return;
+    if(!lastTs) lastTs=ts;
+    const dt=Math.min(0.033,(ts-lastTs)/1000); lastTs=ts;
+    step(dt); draw(); distTxt.textContent = Math.round(state.dist);
+    raf=requestAnimationFrame(loop);
+  }
+
+  function start(){ if(running) return; running=true; overlay.classList.add('hidden'); lastTs=0; if(raf) cancelAnimationFrame(raf); raf=requestAnimationFrame(loop); }
+  function stop(){ running=false; if(raf) cancelAnimationFrame(raf); }
+  function gameOver(){ state.crashed=true; stop(); overlayText.textContent='Game Over'; overlay.classList.remove('hidden'); }
+
+  canvas.addEventListener('mousedown',()=>{ start(); holding=true; });
+  canvas.addEventListener('mouseup',()=>{ holding=false; });
+  canvas.addEventListener('mouseleave',()=>{ holding=false; });
+  window.addEventListener('keydown',e=>{ if(e.code==='Space'){ start(); holding=true; }});
+  window.addEventListener('keyup',e=>{ if(e.code==='Space'){ holding=false; }});
+  window.addEventListener('mouseup',()=>{ holding=false; });
+
+  startBtn.addEventListener('click',()=>{ init(); start(); });
+  resetBtn.addEventListener('click',()=>{ init(); start(); });
+  pickTrump.addEventListener('click',()=>{ currentMode='trump'; updatePickUI(); init(); });
+  pickBiden.addEventListener('click',()=>{ currentMode='biden'; updatePickUI(); init(); });
+
+  updatePickUI();
+  init();
+})();
+</script>
+</body>
+</html>
